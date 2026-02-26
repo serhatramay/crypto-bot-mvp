@@ -4,7 +4,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python3 scripts/run_ws_dashboard.py --config config/btc-volatile.json --provider binance --symbol BTCUSDT --interval 5m --mainnet --host 0.0.0.0 --port $PORT --only-actions --warmup-candles 10
+    startCommand: python3 scripts/run_ws_dashboard.py --config config/btc-volatile.json --provider binance --symbol BTCUSDT --interval 5m --mainnet --host 0.0.0.0 --port $PORT --only-actions --warmup-candles 3
     autoDeploy: true
     healthCheckPath: /api/state
     envVars:
