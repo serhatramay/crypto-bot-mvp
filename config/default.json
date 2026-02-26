@@ -21,6 +21,7 @@
   "min_order_notional": 250.0,
   "stop_loss_pct": 0.015,
   "take_profit_pct": 0.03,
+  "close_position_at_end": true,
   "enable_llm_log_analysis": false,
   "groq_model": "llama-3.1-8b-instant"
 }

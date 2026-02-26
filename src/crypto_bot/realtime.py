@@ -32,13 +32,39 @@ class RealtimePaperRunner:
         self.executor = build_order_executor(config, self.wallet)
 
     def _check_sl_tp(self, candle: Candle) -> Optional[tuple[float, str]]:
+        """Check if SL or TP was hit within the candle range.
+        
+        Returns the execution price and reason. For more realistic simulation,
+        SL/TP executes at the trigger price, not at close.
+        """
         pos = self.wallet.position
         if not pos.is_open:
             return None
-        if pos.stop_loss_price and candle.low <= pos.stop_loss_price:
-            return pos.stop_loss_price, "stop_loss"
-        if pos.take_profit_price and candle.high >= pos.take_profit_price:
-            return pos.take_profit_price, "take_profit"
+        
+        sl_price = pos.stop_loss_price
+        tp_price = pos.take_profit_price
+        
+        # Check if SL was hit (price went below SL)
+        if sl_price and candle.low <= sl_price:
+            # Check if TP was also hit in the same candle
+            if tp_price and candle.high >= tp_price:
+                # Both hit - determine which came first
+                # If entry was below SL (long position), price went up then down
+                # If entry was above TP, price went down then up
+                # Conservative: assume SL hit first (worse outcome)
+                entry = pos.entry_price
+                if entry <= sl_price:
+                    # Price went up then down, TP hit first
+                    return tp_price, "take_profit"
+                else:
+                    # Price went down then up, SL hit first
+                    return sl_price, "stop_loss"
+            return sl_price, "stop_loss"
+        
+        # Check if TP was hit (price went above TP)
+        if tp_price and candle.high >= tp_price:
+            return tp_price, "take_profit"
+        
         return None
 
     def process_candle(self, candle: Candle, on_event: Optional[Callable[[RealtimeEvent], None]] = None) -> RealtimeEvent:
@@ -54,6 +80,8 @@ class RealtimePaperRunner:
             if len(self.wallet.closed_trades) > before_trades:
                 t = self.wallet.closed_trades[-1]
                 note = f"sell qty={t.qty:.6f} @ {t.exit_price:.2f} pnl={t.net_pnl:.2f} ({t.exit_reason})"
+                # Notify risk manager of realized PnL
+                self.risk.on_trade_closed(t.net_pnl)
             else:
                 note = reason
             signal = Signal.SELL
@@ -79,6 +107,8 @@ class RealtimePaperRunner:
             if ok and len(self.wallet.closed_trades) > before_trades:
                 t = self.wallet.closed_trades[-1]
                 note = f"sell qty={t.qty:.6f} @ {t.exit_price:.2f} pnl={t.net_pnl:.2f} ({t.exit_reason})"
+                # Notify risk manager of realized PnL
+                self.risk.on_trade_closed(t.net_pnl)
             else:
                 note = "sell_rejected"
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
@@ -23,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mainnet", dest="testnet", action="store_false")
     p.add_argument("--only-actions", action="store_true")
     p.add_argument("--warmup-candles", type=int, default=50)
+    p.add_argument("--log-file", default=str(ROOT / "logs" / "ws_paper_trades.jsonl"))
     return p
 
 
@@ -39,12 +42,31 @@ def main() -> None:
     config = build_bot_config(load_json_config(args.config), overrides)
     runner = RealtimePaperRunner(config)
 
+    # Setup logging directory
+    log_path = Path(args.log_file)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
     print("=== WS Paper Bot ===")
     print(
         f"provider={config.exchange_provider} symbol={config.symbol} interval={config.timeframe} testnet={config.exchange_testnet}"
     )
+    print(f"Trade log: {log_path}")
     print("Press Ctrl+C to stop. Requires: pip install websocket-client")
     last_seen_ts = None
+
+    def log_event(event) -> None:
+        """Log event to JSONL file"""
+        log_entry = {
+            "ts": event.ts,
+            "price": event.price,
+            "signal": event.signal,
+            "equity": event.equity,
+            "position_open": event.position_open,
+            "note": event.note,
+            "logged_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
 
     def on_candle(candle, source: str = "ws") -> None:
         nonlocal last_seen_ts
@@ -52,6 +74,7 @@ def main() -> None:
             return
         last_seen_ts = candle.ts
         event = runner.process_candle(candle)
+        log_event(event)
         if args.only_actions and event.signal == "HOLD" and not event.note:
             return
         print(

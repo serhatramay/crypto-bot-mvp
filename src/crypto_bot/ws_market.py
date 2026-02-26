@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from typing import Callable
 from urllib import parse, request
@@ -21,11 +22,22 @@ def _require_ws_client() -> None:
 
 
 class BinanceKlineStream:
-    def __init__(self, symbol: str, interval: str, on_candle: Callable[[Candle], None]) -> None:
+    def __init__(
+        self,
+        symbol: str,
+        interval: str,
+        on_candle: Callable[[Candle], None],
+        reconnect_delay: float = 5.0,
+        max_reconnect_delay: float = 60.0,
+    ) -> None:
         self.symbol = symbol.lower()
         self.interval = interval
         self.on_candle = on_candle
         self.ws_app = None
+        self._reconnect_delay = reconnect_delay
+        self._max_reconnect_delay = max_reconnect_delay
+        self._current_delay = reconnect_delay
+        self._running = False
 
     def _url(self) -> str:
         return f"wss://stream.binance.com:9443/ws/{self.symbol}@kline_{self.interval}"
@@ -46,23 +58,59 @@ class BinanceKlineStream:
                 volume=float(k.get("v", 0.0)),
             )
         )
+        # Reset delay on successful message
+        self._current_delay = self._reconnect_delay
+
+    def _on_error(self, _ws, error) -> None:
+        print(f"[Binance WS] Error: {error}")
+
+    def _on_close(self, _ws, close_status_code, close_msg) -> None:
+        print(f"[Binance WS] Closed: {close_status_code} - {close_msg}")
+        if self._running:
+            print(f"[Binance WS] Reconnecting in {self._current_delay}s...")
+            time.sleep(self._current_delay)
+            self._current_delay = min(self._current_delay * 2, self._max_reconnect_delay)
+            self.run_forever()
 
     def run_forever(self) -> None:
         _require_ws_client()
-        self.ws_app = websocket.WebSocketApp(self._url(), on_message=self._on_message)  # type: ignore[attr-defined]
+        self._running = True
+        self.ws_app = websocket.WebSocketApp(
+            self._url(),
+            on_message=self._on_message,
+            on_error=self._on_error,
+            on_close=self._on_close,
+        )
         self.ws_app.run_forever()
+
+    def stop(self) -> None:
+        self._running = False
+        if self.ws_app:
+            self.ws_app.close()
 
 
 class BybitKlineStream:
-    def __init__(self, symbol: str, interval: str, on_candle: Callable[[Candle], None], testnet: bool = True) -> None:
+    def __init__(
+        self,
+        symbol: str,
+        interval: str,
+        on_candle: Callable[[Candle], None],
+        testnet: bool = True,
+        reconnect_delay: float = 5.0,
+        max_reconnect_delay: float = 60.0,
+    ) -> None:
         self.symbol = symbol.upper()
         self.interval = interval
         self.on_candle = on_candle
         self.base = "wss://stream-testnet.bybit.com/v5/public/spot" if testnet else "wss://stream.bybit.com/v5/public/spot"
         self.ws_app = None
+        self._reconnect_delay = reconnect_delay
+        self._max_reconnect_delay = max_reconnect_delay
+        self._current_delay = reconnect_delay
+        self._running = False
 
     def _topic(self) -> str:
-        bybit_interval = self.interval.replace("m", "") if self.interval.endswith("m") else self.interval
+        bybit_interval = _bybit_interval(self.interval)
         return f"kline.{bybit_interval}.{self.symbol}"
 
     def _on_open(self, ws) -> None:
@@ -85,15 +133,36 @@ class BybitKlineStream:
                     volume=float(item.get("volume", 0.0)),
                 )
             )
+        # Reset delay on successful message
+        self._current_delay = self._reconnect_delay
+
+    def _on_error(self, _ws, error) -> None:
+        print(f"[Bybit WS] Error: {error}")
+
+    def _on_close(self, _ws, close_status_code, close_msg) -> None:
+        print(f"[Bybit WS] Closed: {close_status_code} - {close_msg}")
+        if self._running:
+            print(f"[Bybit WS] Reconnecting in {self._current_delay}s...")
+            time.sleep(self._current_delay)
+            self._current_delay = min(self._current_delay * 2, self._max_reconnect_delay)
+            self.run_forever()
 
     def run_forever(self) -> None:
         _require_ws_client()
-        self.ws_app = websocket.WebSocketApp(  # type: ignore[attr-defined]
+        self._running = True
+        self.ws_app = websocket.WebSocketApp(
             self.base,
             on_open=self._on_open,
             on_message=self._on_message,
+            on_error=self._on_error,
+            on_close=self._on_close,
         )
         self.ws_app.run_forever()
+
+    def stop(self) -> None:
+        self._running = False
+        if self.ws_app:
+            self.ws_app.close()
 
 
 def build_public_kline_stream(

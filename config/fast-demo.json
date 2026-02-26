@@ -21,6 +21,7 @@
   "paper_partial_fill_probability": 0.08,
   "paper_partial_fill_min_ratio": 0.5,
   "paper_random_seed": 42,
+  "close_position_at_end": true,
   "enable_llm_log_analysis": false,
   "groq_model": "llama-3.1-8b-instant"
 }

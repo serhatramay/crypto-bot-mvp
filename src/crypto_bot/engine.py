@@ -30,14 +30,31 @@ class TradingEngine:
         self.executor = build_order_executor(config, self.wallet)
 
     def _exit_price_and_reason(self, candle: Candle) -> tuple[float, str] | None:
+        """Check if SL or TP was hit within the candle range."""
         pos = self.wallet.position
         if not pos.is_open:
             return None
 
-        if pos.stop_loss_price and candle.low <= pos.stop_loss_price:
-            return pos.stop_loss_price, "stop_loss"
-        if pos.take_profit_price and candle.high >= pos.take_profit_price:
-            return pos.take_profit_price, "take_profit"
+        sl_price = pos.stop_loss_price
+        tp_price = pos.take_profit_price
+
+        # Check if SL was hit
+        if sl_price and candle.low <= sl_price:
+            # Both SL and TP hit in same candle - determine which came first
+            if tp_price and candle.high >= tp_price:
+                entry = pos.entry_price
+                if entry <= sl_price:
+                    # Price went up then down, TP hit first
+                    return tp_price, "take_profit"
+                else:
+                    # Price went down then up, SL hit first
+                    return sl_price, "stop_loss"
+            return sl_price, "stop_loss"
+
+        # Check if TP was hit
+        if tp_price and candle.high >= tp_price:
+            return tp_price, "take_profit"
+
         return None
 
     def run(self, candles: list[Candle]) -> BacktestResult:
@@ -59,7 +76,12 @@ class TradingEngine:
             exit_trigger = self._exit_price_and_reason(candle)
             if exit_trigger is not None:
                 exit_price, reason = exit_trigger
+                before_trades = len(self.wallet.closed_trades)
                 self.executor.place_market_sell_all(candle.ts, exit_price, reason=reason)
+                # Notify risk manager of realized PnL
+                if len(self.wallet.closed_trades) > before_trades:
+                    t = self.wallet.closed_trades[-1]
+                    self.risk.on_trade_closed(t.net_pnl)
                 continue
 
             if signal == Signal.BUY:
@@ -75,7 +97,12 @@ class TradingEngine:
                         take_profit_price=take_price,
                     )
             elif signal == Signal.SELL:
+                before_trades = len(self.wallet.closed_trades)
                 self.executor.place_market_sell_all(candle.ts, candle.close, reason="signal")
+                # Notify risk manager of realized PnL
+                if len(self.wallet.closed_trades) > before_trades:
+                    t = self.wallet.closed_trades[-1]
+                    self.risk.on_trade_closed(t.net_pnl)
 
         if self.config.close_position_at_end and self.wallet.position.is_open:
             last = candles[-1]
