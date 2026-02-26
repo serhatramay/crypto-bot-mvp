@@ -152,7 +152,7 @@ Onerilen akış:
 
 Varsayilan Render start command (profitability test paper mode):
 ```bash
-python3 scripts/run_ws_dashboard.py --config config/profitability-test.json --provider binance --symbol BTCUSDT --interval 1m --mainnet --host 0.0.0.0 --port $PORT --only-actions --log-file logs/profitability-test.jsonl
+ python3 scripts/run_ws_dashboard.py --config config/profitability-test.json --provider bybit --symbol BTCUSDT --interval 1m --mainnet --host 0.0.0.0 --port $PORT --only-actions --log-file logs/profitability-test.jsonl
 ```
 
 Notlar:

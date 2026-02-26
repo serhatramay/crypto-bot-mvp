@@ -4,7 +4,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python3 scripts/run_ws_dashboard.py --config config/profitability-test.json --provider binance --symbol BTCUSDT --interval 1m --mainnet --host 0.0.0.0 --port $PORT --only-actions --log-file logs/profitability-test.jsonl
+    startCommand: python3 scripts/run_ws_dashboard.py --config config/profitability-test.json --provider bybit --symbol BTCUSDT --interval 1m --mainnet --host 0.0.0.0 --port $PORT --only-actions --log-file logs/profitability-test.jsonl
     autoDeploy: true
     healthCheckPath: /api/state
     envVars:
