@@ -1,0 +1,440 @@
+diff --git a/.gitignore b/.gitignore
+index 87aa98f..30d0062 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -4,3 +4,5 @@ __pycache__/
+ .env
+ logs/*.jsonl
+ .DS_Store
++venv/
++logs/
+diff --git a/config/default.json b/config/default.json
+index b818188..6cb7796 100644
+--- a/config/default.json
++++ b/config/default.json
+@@ -21,6 +21,7 @@
+   "min_order_notional": 250.0,
+   "stop_loss_pct": 0.015,
+   "take_profit_pct": 0.03,
++  "close_position_at_end": true,
+   "enable_llm_log_analysis": false,
+   "groq_model": "llama-3.1-8b-instant"
+ }
+diff --git a/config/fast-demo.json b/config/fast-demo.json
+index cf6b0cb..cb19b7a 100644
+--- a/config/fast-demo.json
++++ b/config/fast-demo.json
+@@ -21,6 +21,7 @@
+   "paper_partial_fill_probability": 0.08,
+   "paper_partial_fill_min_ratio": 0.5,
+   "paper_random_seed": 42,
++  "close_position_at_end": true,
+   "enable_llm_log_analysis": false,
+   "groq_model": "llama-3.1-8b-instant"
+ }
+diff --git a/scripts/run_ws_paper.py b/scripts/run_ws_paper.py
+index 6332f24..dc58a7c 100644
+--- a/scripts/run_ws_paper.py
++++ b/scripts/run_ws_paper.py
+@@ -1,6 +1,8 @@
+ from __future__ import annotations
+ 
+ import argparse
++import json
++from datetime import datetime, timezone
+ from pathlib import Path
+ import sys
+ 
+@@ -23,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
+     p.add_argument("--mainnet", dest="testnet", action="store_false")
+     p.add_argument("--only-actions", action="store_true")
+     p.add_argument("--warmup-candles", type=int, default=50)
++    p.add_argument("--log-file", default=str(ROOT / "logs" / "ws_paper_trades.jsonl"))
+     return p
+ 
+ 
+@@ -39,19 +42,39 @@ def main() -> None:
+     config = build_bot_config(load_json_config(args.config), overrides)
+     runner = RealtimePaperRunner(config)
+ 
++    # Setup logging directory
++    log_path = Path(args.log_file)
++    log_path.parent.mkdir(parents=True, exist_ok=True)
++
+     print("=== WS Paper Bot ===")
+     print(
+         f"provider={config.exchange_provider} symbol={config.symbol} interval={config.timeframe} testnet={config.exchange_testnet}"
+     )
++    print(f"Trade log: {log_path}")
+     print("Press Ctrl+C to stop. Requires: pip install websocket-client")
+     last_seen_ts = None
+ 
++    def log_event(event) -> None:
++        """Log event to JSONL file"""
++        log_entry = {
++            "ts": event.ts,
++            "price": event.price,
++            "signal": event.signal,
++            "equity": event.equity,
++            "position_open": event.position_open,
++            "note": event.note,
++            "logged_at": datetime.now(timezone.utc).isoformat(),
++        }
++        with open(log_path, "a", encoding="utf-8") as f:
++            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
++
+     def on_candle(candle, source: str = "ws") -> None:
+         nonlocal last_seen_ts
+         if last_seen_ts is not None and candle.ts <= last_seen_ts:
+             return
+         last_seen_ts = candle.ts
+         event = runner.process_candle(candle)
++        log_event(event)
+         if args.only_actions and event.signal == "HOLD" and not event.note:
+             return
+         print(
+diff --git a/src/crypto_bot/engine.py b/src/crypto_bot/engine.py
+index 4065f2c..245ab3b 100644
+--- a/src/crypto_bot/engine.py
++++ b/src/crypto_bot/engine.py
+@@ -30,14 +30,31 @@ class TradingEngine:
+         self.executor = build_order_executor(config, self.wallet)
+ 
+     def _exit_price_and_reason(self, candle: Candle) -> tuple[float, str] | None:
++        """Check if SL or TP was hit within the candle range."""
+         pos = self.wallet.position
+         if not pos.is_open:
+             return None
+ 
+-        if pos.stop_loss_price and candle.low <= pos.stop_loss_price:
+-            return pos.stop_loss_price, "stop_loss"
+-        if pos.take_profit_price and candle.high >= pos.take_profit_price:
+-            return pos.take_profit_price, "take_profit"
++        sl_price = pos.stop_loss_price
++        tp_price = pos.take_profit_price
++
++        # Check if SL was hit
++        if sl_price and candle.low <= sl_price:
++            # Both SL and TP hit in same candle - determine which came first
++            if tp_price and candle.high >= tp_price:
++                entry = pos.entry_price
++                if entry <= sl_price:
++                    # Price went up then down, TP hit first
++                    return tp_price, "take_profit"
++                else:
++                    # Price went down then up, SL hit first
++                    return sl_price, "stop_loss"
++            return sl_price, "stop_loss"
++
++        # Check if TP was hit
++        if tp_price and candle.high >= tp_price:
++            return tp_price, "take_profit"
++
+         return None
+ 
+     def run(self, candles: list[Candle]) -> BacktestResult:
+@@ -59,7 +76,12 @@ class TradingEngine:
+             exit_trigger = self._exit_price_and_reason(candle)
+             if exit_trigger is not None:
+                 exit_price, reason = exit_trigger
++                before_trades = len(self.wallet.closed_trades)
+                 self.executor.place_market_sell_all(candle.ts, exit_price, reason=reason)
++                # Notify risk manager of realized PnL
++                if len(self.wallet.closed_trades) > before_trades:
++                    t = self.wallet.closed_trades[-1]
++                    self.risk.on_trade_closed(t.net_pnl)
+                 continue
+ 
+             if signal == Signal.BUY:
+@@ -75,7 +97,12 @@ class TradingEngine:
+                         take_profit_price=take_price,
+                     )
+             elif signal == Signal.SELL:
++                before_trades = len(self.wallet.closed_trades)
+                 self.executor.place_market_sell_all(candle.ts, candle.close, reason="signal")
++                # Notify risk manager of realized PnL
++                if len(self.wallet.closed_trades) > before_trades:
++                    t = self.wallet.closed_trades[-1]
++                    self.risk.on_trade_closed(t.net_pnl)
+ 
+         if self.config.close_position_at_end and self.wallet.position.is_open:
+             last = candles[-1]
+diff --git a/src/crypto_bot/realtime.py b/src/crypto_bot/realtime.py
+index 8dab75c..ecf4e3b 100644
+--- a/src/crypto_bot/realtime.py
++++ b/src/crypto_bot/realtime.py
+@@ -32,13 +32,39 @@ class RealtimePaperRunner:
+         self.executor = build_order_executor(config, self.wallet)
+ 
+     def _check_sl_tp(self, candle: Candle) -> Optional[tuple[float, str]]:
++        """Check if SL or TP was hit within the candle range.
++        
++        Returns the execution price and reason. For more realistic simulation,
++        SL/TP executes at the trigger price, not at close.
++        """
+         pos = self.wallet.position
+         if not pos.is_open:
+             return None
+-        if pos.stop_loss_price and candle.low <= pos.stop_loss_price:
+-            return pos.stop_loss_price, "stop_loss"
+-        if pos.take_profit_price and candle.high >= pos.take_profit_price:
+-            return pos.take_profit_price, "take_profit"
++        
++        sl_price = pos.stop_loss_price
++        tp_price = pos.take_profit_price
++        
++        # Check if SL was hit (price went below SL)
++        if sl_price and candle.low <= sl_price:
++            # Check if TP was also hit in the same candle
++            if tp_price and candle.high >= tp_price:
++                # Both hit - determine which came first
++                # If entry was below SL (long position), price went up then down
++                # If entry was above TP, price went down then up
++                # Conservative: assume SL hit first (worse outcome)
++                entry = pos.entry_price
++                if entry <= sl_price:
++                    # Price went up then down, TP hit first
++                    return tp_price, "take_profit"
++                else:
++                    # Price went down then up, SL hit first
++                    return sl_price, "stop_loss"
++            return sl_price, "stop_loss"
++        
++        # Check if TP was hit (price went above TP)
++        if tp_price and candle.high >= tp_price:
++            return tp_price, "take_profit"
++        
+         return None
+ 
+     def process_candle(self, candle: Candle, on_event: Optional[Callable[[RealtimeEvent], None]] = None) -> RealtimeEvent:
+@@ -52,6 +78,8 @@ class RealtimePaperRunner:
+             if len(self.wallet.closed_trades) > before_trades:
+                 t = self.wallet.closed_trades[-1]
+                 note = f"sell qty={t.qty:.6f} @ {t.exit_price:.2f} pnl={t.net_pnl:.2f} ({t.exit_reason})"
++                # Notify risk manager of realized PnL
++                self.risk.on_trade_closed(t.net_pnl)
+             else:
+                 note = reason
+             signal = Signal.SELL
+@@ -77,6 +105,8 @@ class RealtimePaperRunner:
+             if ok and len(self.wallet.closed_trades) > before_trades:
+                 t = self.wallet.closed_trades[-1]
+                 note = f"sell qty={t.qty:.6f} @ {t.exit_price:.2f} pnl={t.net_pnl:.2f} ({t.exit_reason})"
++                # Notify risk manager of realized PnL
++                self.risk.on_trade_closed(t.net_pnl)
+             else:
+                 note = "sell_rejected"
+ 
+diff --git a/src/crypto_bot/risk.py b/src/crypto_bot/risk.py
+index 1e6c2e9..2d3b6f1 100644
+--- a/src/crypto_bot/risk.py
++++ b/src/crypto_bot/risk.py
+@@ -1,25 +1,56 @@
+ from __future__ import annotations
+ 
+-from dataclasses import dataclass
++from dataclasses import dataclass, field
+ from datetime import date
++from typing import Callable
+ 
+ 
+ @dataclass
+ class RiskSnapshot:
+     day: date | None = None
+     day_start_equity: float = 0.0
++    realized_daily_pnl: float = 0.0  # Track realized PnL separately
+ 
+ 
+ class RiskManager:
+     def __init__(self, risk_per_trade: float, max_daily_loss_pct: float, min_order_notional: float) -> None:
+         self.risk_per_trade = risk_per_trade
+         self.max_daily_loss_pct = max_daily_loss_pct
+         self.min_order_notional = min_order_notional
+         self._state = RiskSnapshot()
++        self._on_trade_close_callbacks: list[Callable[[float], None]] = []
+ 
+     def _roll_day(self, current_day: date, equity: float) -> None:
+         if self._state.day != current_day:
+             self._state.day = current_day
+             self._state.day_start_equity = equity
++            self._state.realized_daily_pnl = 0.0  # Reset realized PnL on new day
+ 
+-    def trading_allowed(self, current_day: date, equity: float) -> bool:
++    def on_trade_closed(self, net_pnl: float) -> None:
++        """Call this when a trade is closed to track realized PnL."""
++        self._state.realized_daily_pnl += net_pnl
++
++    def trading_allowed(self, current_day: date, equity: float, unrealized_pnl: float = 0.0) -> bool:
++        """Check if trading is allowed based on daily loss limit.
++        
++        Args:
++            current_day: Current trading day
++            equity: Current total equity (cash + position value)
++            unrealized_pnl: Unrealized profit/loss from open position (default 0)
++                             This is excluded from daily loss calculation.
++        """
+         self._roll_day(current_day, equity)
+         if self._state.day_start_equity <= 0:
+             return True
+-        daily_loss_pct = (self._state.day_start_equity - equity) / self._state.day_start_equity
+-        return daily_loss_pct < self.max_daily_loss_pct
++        
++        # Only count realized PnL against daily loss limit
++        # Unrealized PnL (open position fluctuations) doesn't count
++        effective_equity = equity - unrealized_pnl
++        daily_loss_pct = (self._state.day_start_equity - effective_equity + self._state.realized_daily_pnl) / self._state.day_start_equity
++        
++        # Alternative simpler calculation: use realized PnL directly
++        realized_loss_pct = -self._state.realized_daily_pnl / self._state.day_start_equity if self._state.day_start_equity > 0 else 0
++        
++        return realized_loss_pct < self.max_daily_loss_pct
++
++    def get_daily_stats(self) -> dict:
++        """Get current daily risk statistics."""
++        return {
++            "day": self._state.day.isoformat() if self._state.day else None,
++            "day_start_equity": self._state.day_start_equity,
++            "realized_daily_pnl": self._state.realized_daily_pnl,
++            "max_daily_loss_pct": self.max_daily_loss_pct,
++        }
+ 
+     def position_size_qty(self, equity: float, price: float) -> float:
+         notional = max(self.min_order_notional, equity * self.risk_per_trade)
+diff --git a/src/crypto_bot/ws_market.py b/src/crypto_bot/ws_market.py
+index 8f2ccb3..aba6b99 100644
+--- a/src/crypto_bot/ws_market.py
++++ b/src/crypto_bot/ws_market.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import json
++import time
+ from datetime import datetime, timezone
+ from typing import Callable
+ from urllib import parse, request
+@@ -21,11 +22,22 @@ def _require_ws_client() -> None:
+ 
+ 
+ class BinanceKlineStream:
+-    def __init__(self, symbol: str, interval: str, on_candle: Callable[[Candle], None]) -> None:
++    def __init__(
++        self,
++        symbol: str,
++        interval: str,
++        on_candle: Callable[[Candle], None],
++        reconnect_delay: float = 5.0,
++        max_reconnect_delay: float = 60.0,
++    ) -> None:
+         self.symbol = symbol.lower()
+         self.interval = interval
+         self.on_candle = on_candle
+         self.ws_app = None
++        self._reconnect_delay = reconnect_delay
++        self._max_reconnect_delay = max_reconnect_delay
++        self._current_delay = reconnect_delay
++        self._running = False
+ 
+     def _url(self) -> str:
+         return f"wss://stream.binance.com:9443/ws/{self.symbol}@kline_{self.interval}"
+@@ -46,23 +58,59 @@ class BinanceKlineStream:
+                 volume=float(k.get("v", 0.0)),
+             )
+         )
++        # Reset delay on successful message
++        self._current_delay = self._reconnect_delay
++
++    def _on_error(self, _ws, error) -> None:
++        print(f"[Binance WS] Error: {error}")
++
++    def _on_close(self, _ws, close_status_code, close_msg) -> None:
++        print(f"[Binance WS] Closed: {close_status_code} - {close_msg}")
++        if self._running:
++            print(f"[Binance WS] Reconnecting in {self._current_delay}s...")
++            time.sleep(self._current_delay)
++            self._current_delay = min(self._current_delay * 2, self._max_reconnect_delay)
++            self.run_forever()
+ 
+     def run_forever(self) -> None:
+         _require_ws_client()
+-        self.ws_app = websocket.WebSocketApp(self._url(), on_message=self._on_message)  # type: ignore[attr-defined]
++        self._running = True
++        self.ws_app = websocket.WebSocketApp(
++            self._url(),
++            on_message=self._on_message,
++            on_error=self._on_error,
++            on_close=self._on_close,
++        )
+         self.ws_app.run_forever()
+ 
++    def stop(self) -> None:
++        self._running = False
++        if self.ws_app:
++            self.ws_app.close()
++
+ 
+ class BybitKlineStream:
+-    def __init__(self, symbol: str, interval: str, on_candle: Callable[[Candle], None], testnet: bool = True) -> None:
++    def __init__(
++        self,
++        symbol: str,
++        interval: str,
++        on_candle: Callable[[Candle], None],
++        testnet: bool = True,
++        reconnect_delay: float = 5.0,
++        max_reconnect_delay: float = 60.0,
++    ) -> None:
+         self.symbol = symbol.upper()
+         self.interval = interval
+         self.on_candle = on_candle
+         self.base = "wss://stream-testnet.bybit.com/v5/public/spot" if testnet else "wss://stream.bybit.com/v5/public/spot"
+         self.ws_app = None
++        self._reconnect_delay = reconnect_delay
++        self._max_reconnect_delay = max_reconnect_delay
++        self._current_delay = reconnect_delay
++        self._running = False
+ 
+     def _topic(self) -> str:
+-        bybit_interval = self.interval.replace("m", "") if self.interval.endswith("m") else self.interval
++        bybit_interval = _bybit_interval(self.interval)
+         return f"kline.{bybit_interval}.{self.symbol}"
+ 
+     def _on_open(self, ws) -> None:
+@@ -85,16 +133,37 @@ class BybitKlineStream:
+                     volume=float(item.get("volume", 0.0)),
+                 )
+             )
++        # Reset delay on successful message
++        self._current_delay = self._reconnect_delay
++
++    def _on_error(self, _ws, error) -> None:
++        print(f"[Bybit WS] Error: {error}")
++
++    def _on_close(self, _ws, close_status_code, close_msg) -> None:
++        print(f"[Bybit WS] Closed: {close_status_code} - {close_msg}")
++        if self._running:
++            print(f"[Bybit WS] Reconnecting in {self._current_delay}s...")
++            time.sleep(self._current_delay)
++            self._current_delay = min(self._current_delay * 2, self._max_reconnect_delay)
++            self.run_forever()
+ 
+     def run_forever(self) -> None:
+         _require_ws_client()
+-        self.ws_app = websocket.WebSocketApp(  # type: ignore[attr-defined]
++        self._running = True
++        self.ws_app = websocket.WebSocketApp(
+             self.base,
+             on_open=self._on_open,
+             on_message=self._on_message,
++            on_error=self._on_error,
++            on_close=self._on_close,
+         )
+         self.ws_app.run_forever()
+ 
++    def stop(self) -> None:
++        self._running = False
++        if self.ws_app:
++            self.ws_app.close()
++
+ 
+ def build_public_kline_stream(
+     provider: str,
