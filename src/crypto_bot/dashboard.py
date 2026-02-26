@@ -28,6 +28,7 @@ class DashboardState:
             "recent_events": [],
             "recent_trades": [],
             "open_position": None,
+            "coins": {},
         }
 
     def set_status(self, status: str) -> None:
@@ -88,17 +89,45 @@ class DashboardState:
 
 
 DASHBOARD_HTML = """<!doctype html>
-<html lang=\"en\">
+<html lang="en">
 <head>
-  <meta charset=\"utf-8\" />
-  <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Crypto Bot Dashboard</title>
   <style>
-    :root { --bg:#0b1117; --panel:#121a23; --line:#223042; --text:#e8edf3; --muted:#8ea1b5; --ok:#3ecf8e; --bad:#ff6b6b; }
+    :root { --bg:#0b1117; --panel:#121a23; --line:#223042; --text:#e8edf3; --muted:#8ea1b5; --ok:#3ecf8e; --bad:#ff6b6b; --btc:#f7931a; --eth:#627eea; --sol:#14f195; --xrp:#346aa9; }
     * { box-sizing: border-box; }
     body { margin:0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: radial-gradient(circle at top, #16202c, #0b1117 60%); color:var(--text); }
-    .wrap { max-width:1100px; margin:0 auto; padding:20px; }
+    .wrap { max-width:1200px; margin:0 auto; padding:20px; }
     h1 { margin:0 0 12px; font-size:20px; }
+    .status { margin-bottom:15px; color:var(--muted); font-size:12px; }
+    
+    /* Coin Cards */
+    .coins-grid { display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; margin-bottom:20px; }
+    .coin-card { background:rgba(18,26,35,.95); border:1px solid var(--line); border-radius:12px; padding:15px; position:relative; overflow:hidden; }
+    .coin-card::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; }
+    .coin-card.btc::before { background:var(--btc); }
+    .coin-card.eth::before { background:var(--eth); }
+    .coin-card.sol::before { background:var(--sol); }
+    .coin-card.xrp::before { background:var(--xrp); }
+    .coin-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+    .coin-symbol { font-size:18px; font-weight:700; }
+    .coin-symbol.btc { color:var(--btc); }
+    .coin-symbol.eth { color:var(--eth); }
+    .coin-symbol.sol { color:var(--sol); }
+    .coin-symbol.xrp { color:var(--xrp); }
+    .coin-signal { font-size:11px; padding:3px 8px; border-radius:4px; background:var(--line); }
+    .coin-signal.buy { background:var(--ok); color:#000; }
+    .coin-signal.sell { background:var(--bad); color:#fff; }
+    .coin-price { font-size:28px; font-weight:700; margin:10px 0; }
+    .coin-change { font-size:13px; }
+    .coin-change.up { color:var(--ok); }
+    .coin-change.down { color:var(--bad); }
+    .coin-stats { display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-top:12px; font-size:11px; color:var(--muted); }
+    .coin-stats div { background:rgba(255,255,255,.03); padding:6px 8px; border-radius:6px; }
+    .coin-stats span { color:var(--text); font-weight:600; }
+    
+    /* Main Grid */
     .grid { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:12px; }
     .card { background:rgba(18,26,35,.95); border:1px solid var(--line); border-radius:12px; padding:12px; }
     .label { color:var(--muted); font-size:12px; }
@@ -109,7 +138,6 @@ DASHBOARD_HTML = """<!doctype html>
     table { width:100%; border-collapse: collapse; font-size:12px; }
     th, td { border-bottom:1px solid var(--line); padding:8px 6px; text-align:left; }
     th { color:var(--muted); font-weight:600; }
-    .status { margin-bottom:10px; color:var(--muted); }
     .trade-list { display:flex; flex-direction:column; gap:10px; margin-top:10px; max-height:560px; overflow:auto; }
     .trade-card { border:1px solid var(--line); border-radius:10px; overflow:hidden; background:#0f1620; }
     .trade-head { display:flex; justify-content:space-between; gap:8px; background:rgba(255,255,255,.03); padding:8px 10px; }
@@ -121,30 +149,86 @@ DASHBOARD_HTML = """<!doctype html>
     .trade-pnl.bad { color: var(--bad); }
     .detail-lines { margin-top:8px; font-size:12px; line-height:1.5; }
     .detail-lines div { margin:2px 0; }
-    @media (max-width: 900px) { .grid { grid-template-columns: repeat(2, 1fr); } .row { grid-template-columns: 1fr; } }
+    @media (max-width: 900px) { .coins-grid { grid-template-columns: repeat(2, 1fr); } .grid { grid-template-columns: repeat(2, 1fr); } .row { grid-template-columns: 1fr; } }
+    @media (max-width: 600px) { .coins-grid { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
-<div class=\"wrap\">
-  <h1>Crypto Bot Local Dashboard</h1>
-  <div class=\"status\" id=\"status\">loading...</div>
-  <div class=\"grid\" id=\"cards\"></div>
-  <div class=\"card\" id=\"openpos\" style=\"margin-top:12px;\"></div>
-  <div class=\"row\">
-    <div class=\"card\">
-      <div class=\"label\">Recent Actions (BUY/SELL)</div>
-      <table><thead><tr><th>Time</th><th>Price</th><th>Signal</th><th>Equity</th><th>Note</th></tr></thead><tbody id=\"events\"></tbody></table>
+<div class="wrap">
+  <h1>Crypto Bot Dashboard - Multi Coin</h1>
+  <div class="status" id="status">loading...</div>
+  
+  <!-- 4 Coin Cards -->
+  <div class="coins-grid" id="coins">
+    <div class="coin-card btc">
+      <div class="coin-header">
+        <span class="coin-symbol btc">BTC</span>
+        <span class="coin-signal" id="btc-signal">-</span>
+      </div>
+      <div class="coin-price" id="btc-price">-</div>
+      <div class="coin-change" id="btc-change">-</div>
+      <div class="coin-stats">
+        <div>Equity: <span id="btc-equity">-</span></div>
+        <div>Trades: <span id="btc-trades">-</span></div>
+      </div>
     </div>
-    <div class=\"card\">
-      <div class=\"label\">Recent Trades (Detailed)</div>
-      <div id=\"trades\" class=\"trade-list\"></div>
+    <div class="coin-card eth">
+      <div class="coin-header">
+        <span class="coin-symbol eth">ETH</span>
+        <span class="coin-signal" id="eth-signal">-</span>
+      </div>
+      <div class="coin-price" id="eth-price">-</div>
+      <div class="coin-change" id="eth-change">-</div>
+      <div class="coin-stats">
+        <div>Equity: <span id="eth-equity">-</span></div>
+        <div>Trades: <span id="eth-trades">-</span></div>
+      </div>
+    </div>
+    <div class="coin-card sol">
+      <div class="coin-header">
+        <span class="coin-symbol sol">SOL</span>
+        <span class="coin-signal" id="sol-signal">-</span>
+      </div>
+      <div class="coin-price" id="sol-price">-</div>
+      <div class="coin-change" id="sol-change">-</div>
+      <div class="coin-stats">
+        <div>Equity: <span id="sol-equity">-</span></div>
+        <div>Trades: <span id="sol-trades">-</span></div>
+      </div>
+    </div>
+    <div class="coin-card xrp">
+      <div class="coin-header">
+        <span class="coin-symbol xrp">XRP</span>
+        <span class="coin-signal" id="xrp-signal">-</span>
+      </div>
+      <div class="coin-price" id="xrp-price">-</div>
+      <div class="coin-change" id="xrp-change">-</div>
+      <div class="coin-stats">
+        <div>Equity: <span id="xrp-equity">-</span></div>
+        <div>Trades: <span id="xrp-trades">-</span></div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="grid" id="cards"></div>
+  <div class="card" id="openpos" style="margin-top:12px;"></div>
+  <div class="row">
+    <div class="card">
+      <div class="label">Recent Actions (BUY/SELL)</div>
+      <table><thead><tr><th>Time</th><th>Price</th><th>Signal</th><th>Equity</th><th>Note</th></tr></thead><tbody id="events"></tbody></table>
+    </div>
+    <div class="card">
+      <div class="label">Recent Trades (Detailed)</div>
+      <div id="trades" class="trade-list"></div>
     </div>
   </div>
 </div>
 <script>
+const coinSymbols = ['btc', 'eth', 'sol', 'xrp'];
+const coinNames = {btc:'BTC', eth:'ETH', sol:'SOL', xrp:'XRP'};
+
 function parseBotTs(ts) {
   if (!ts) return null;
-  // Backend sends naive ISO timestamps that are actually UTC; force UTC parsing.
   const normalized = /Z$|[+-]\d{2}:\d{2}$/.test(ts) ? ts : `${ts}Z`;
   const d = new Date(normalized);
   return isNaN(d.getTime()) ? null : d;
@@ -176,10 +260,38 @@ function holdingTime(entryTs, exitTs) {
   parts.push(`${mins}m`);
   return parts.join(' ');
 }
+
 async function poll() {
   const res = await fetch('/api/state');
   const data = await res.json();
-  document.getElementById('status').textContent = `status=${data.status} latest=${data.latest_event ? fmtTimeWithUtc(data.latest_event.ts) : '-'}${data.context && data.context.symbol ? ' | ' + data.context.symbol + ' ' + (data.context.timeframe || '') : ''}`;
+  
+  document.getElementById('status').textContent = `status=${data.status} | latest=${data.latest_event ? fmtTimeWithUtc(data.latest_event.ts) : '-'}${data.context && data.context.symbol ? ' | ' + data.context.symbol : ''}`;
+  
+  // Update coins
+  const coins = data.coins || {};
+  coinSymbols.forEach(sym => {
+    const coin = coins[sym.toUpperCase()] || {};
+    const priceEl = document.getElementById(`${sym}-price`);
+    const signalEl = document.getElementById(`${sym}-signal`);
+    const changeEl = document.getElementById(`${sym}-change`);
+    const equityEl = document.getElementById(`${sym}-equity`);
+    const tradesEl = document.getElementById(`${sym}-trades`);
+    
+    if (priceEl) priceEl.textContent = coin.price ? `$${Number(coin.price).toLocaleString()}` : '-';
+    if (signalEl) {
+      signalEl.textContent = coin.signal || '-';
+      signalEl.className = 'coin-signal ' + (coin.signal || '').toLowerCase();
+    }
+    if (changeEl) {
+      const change = coin.change || 0;
+      changeEl.textContent = change >= 0 ? `+${fmtN(change)}%` : `${fmtN(change)}%`;
+      changeEl.className = 'coin-change ' + (change >= 0 ? 'up' : 'down');
+    }
+    if (equityEl) equityEl.textContent = coin.equity ? fmtN(coin.equity) : '-';
+    if (tradesEl) tradesEl.textContent = coin.trades || '0';
+  });
+  
+  // Main metrics
   const m = data.metrics;
   const cards = [
     ['Equity', m.equity],
@@ -189,28 +301,34 @@ async function poll() {
     ['Position Open', String(m.position_open)],
     ['Total Net PnL', m.total_net_pnl],
   ];
-  document.getElementById('cards').innerHTML = cards.map(([k,v]) => `<div class=\"card\"><div class=\"label\">${k}</div><div class=\"value ${(k==='Total Net PnL' && Number(v)>=0)?'ok':''} ${(k==='Total Net PnL' && Number(v)<0)?'bad':''}\">${v}</div></div>`).join('');
+  document.getElementById('cards').innerHTML = cards.map(([k,v]) => `<div class="card"><div class="label">${k}</div><div class="value ${(k==='Total Net PnL' && Number(v)>=0)?'ok':''} ${(k==='Total Net PnL' && Number(v)<0)?'bad':''}">${v}</div></div>`).join('');
+  
+  // Open position
   const op = data.open_position;
   if (op) {
     const upnl = Number(op.unrealized_pnl || 0);
     const upnlClass = upnl >= 0 ? 'ok' : 'bad';
     document.getElementById('openpos').innerHTML = `
-      <div class=\"label\">Open Position (Detailed)</div>
-      <div class=\"detail-lines\">
+      <div class="label">Open Position (Detailed)</div>
+      <div class="detail-lines">
         <div>Entry time: ${fmtTime(op.entry_ts)}</div>
         <div>Entry price: ${fmtN(op.entry_price)} | Mark price: ${fmtN(op.mark_price)}</div>
         <div>Quantity: ${fmtN(op.qty, 6)}</div>
         <div>Notional: ${fmtN(op.entry_notional)} → ${fmtN(op.mark_value)}</div>
         <div>Stop / Take: ${fmtN(op.stop_loss_price)} / ${fmtN(op.take_profit_price)}</div>
-        <div class=\"trade-pnl ${upnlClass}\">UNREALIZED P&L: ${upnl >= 0 ? '+' : ''}${fmtN(upnl)}</div>
+        <div class="trade-pnl ${upnlClass}">UNREALIZED P&L: ${upnl >= 0 ? '+' : ''}${fmtN(upnl)}</div>
       </div>`;
   } else {
-    document.getElementById('openpos').innerHTML = `<div class=\"label\">Open Position (Detailed)</div><div class=\"detail-lines\"><div>No open position.</div></div>`;
+    document.getElementById('openpos').innerHTML = `<div class="label">Open Position (Detailed)</div><div class="detail-lines"><div>No open position.</div></div>`;
   }
+  
+  // Events
   const actionEvents = (data.recent_events || []).filter(e => e.signal !== 'HOLD');
   document.getElementById('events').innerHTML = actionEvents.length
     ? actionEvents.slice().reverse().map(e => `<tr><td>${fmtTime(e.ts)}</td><td>${Number(e.price).toFixed(2)}</td><td>${e.signal}</td><td>${Number(e.equity).toFixed(2)}</td><td>${e.note || ''}</td></tr>`).join('')
-    : `<tr><td colspan=\"5\" style=\"color:#8ea1b5;\">Henüz BUY/SELL yok (sinyal bekleniyor).</td></tr>`;
+    : `<tr><td colspan="5" style="color:#8ea1b5;">Henüz BUY/SELL yok (sinyal bekleniyor).</td></tr>`;
+  
+  // Trades
   const symbol = (data.context && data.context.symbol) ? data.context.symbol : 'ASSET';
   document.getElementById('trades').innerHTML = (data.recent_trades || []).slice().reverse().map(t => {
     const qty = Number(t.qty || 0);
@@ -225,12 +343,12 @@ async function poll() {
     const totalFees = Number(t.fees ?? 0);
     const retPct = entryNotional > 0 ? (pnl / entryNotional) * 100 : 0;
     const pnlClass = pnl >= 0 ? 'ok' : 'bad';
-    return `<div class=\"trade-card\">
-      <div class=\"trade-head\">
-        <div class=\"trade-title\">Paper trade on ${symbol}</div>
-        <div class=\"trade-time\">${fmtTime(t.exit_ts)}</div>
+    return `<div class="trade-card">
+      <div class="trade-head">
+        <div class="trade-title">Paper trade on ${symbol}</div>
+        <div class="trade-time">${fmtTime(t.exit_ts)}</div>
       </div>
-      <div class=\"trade-body\">
+      <div class="trade-body">
         <div>Price: ${fmtN(entry)} → ${fmtN(exit)}</div>
         <div>Quantity: ${fmtN(qty, 6)}</div>
         <div>Notional: ${fmtN(entryNotional)} → ${fmtN(exitNotional)}</div>
@@ -239,7 +357,7 @@ async function poll() {
         <div>Fees: buy ${fmtN(entryFee)} + sell ${fmtN(exitFee)} = total ${fmtN(totalFees)}</div>
         <div>Exit reason: ${t.exit_reason || '-'}</div>
         <div>Return: ${retPct >= 0 ? '+' : ''}${fmtN(retPct)}%</div>
-        <div class=\"trade-pnl ${pnlClass}\">NET P&L: ${pnl >= 0 ? '+' : ''}${fmtN(pnl)}</div>
+        <div class="trade-pnl ${pnlClass}">NET P&L: ${pnl >= 0 ? '+' : ''}${fmtN(pnl)}</div>
       </div>
     </div>`;
   }).join('');
