@@ -4,7 +4,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python3 scripts/run_ws_dashboard.py --config config/btc-volatile.json --provider binance --symbol BTCUSDT --interval 1m --mainnet --host 0.0.0.0 --port $PORT --only-actions --log-file logs/btc-trades.jsonl
+    startCommand: python3 scripts/run_ws_dashboard.py --config config/btc-volatile.json --provider binance --symbol BTCUSDT --interval 1m --mainnet --host 0.0.0.0 --port $PORT --only-actions --log-file logs/btc-trades.jsonl --warmup-candles 10
     autoDeploy: true
     healthCheckPath: /api/state
     envVars:
@@ -16,7 +16,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python3 scripts/run_ws_paper.py --config config/eth-volatile.json --provider binance --symbol ETHUSDT --interval 1m --mainnet --only-actions --log-file logs/eth-trades.jsonl
+    startCommand: python3 scripts/run_ws_paper.py --config config/eth-volatile.json --provider binance --symbol ETHUSDT --interval 1m --mainnet --only-actions --log-file logs/eth-trades.jsonl --warmup-candles 10
     autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
@@ -27,7 +27,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python3 scripts/run_ws_paper.py --config config/sol-volatile.json --provider binance --symbol SOLUSDT --interval 1m --mainnet --only-actions --log-file logs/sol-trades.jsonl
+    startCommand: python3 scripts/run_ws_paper.py --config config/sol-volatile.json --provider binance --symbol SOLUSDT --interval 1m --mainnet --only-actions --log-file logs/sol-trades.jsonl --warmup-candles 10
     autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
@@ -38,7 +38,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python3 scripts/run_ws_paper.py --config config/xrp-volatile.json --provider binance --symbol XRPUSDT --interval 1m --mainnet --only-actions --log-file logs/xrp-trades.jsonl
+    startCommand: python3 scripts/run_ws_paper.py --config config/xrp-volatile.json --provider binance --symbol XRPUSDT --interval 1m --mainnet --only-actions --log-file logs/xrp-trades.jsonl --warmup-candles 10
     autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
